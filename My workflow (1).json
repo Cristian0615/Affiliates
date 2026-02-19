@@ -1,0 +1,336 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "/new-leads",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "8493ce41-8928-42d0-bfe3-d0129c6aa5ff",
+      "name": "Webhook",
+      "webhookId": "e54744d6-0f11-4957-b60b-112ab6b28f3b"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ================================\n// FOREX AFFILIATE DM — PROD GENERATOR (n8n Code node)\n// Mode: Run Once for Each Item\n// Input: one lead per item (expects lead_index already set upstream)\n// Output: same item + dm_message + routing fields\n// ================================\n\nconst profile = $json;\n\n// ---------- helpers ----------\nfunction pickRandom(arr) {\n  return arr[Math.floor(Math.random() * arr.length)];\n}\n\nfunction randomInt(min, max) {\n  return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction clamp(n, min, max) {\n  return Math.max(min, Math.min(max, n));\n}\n\nfunction stripExtraWhitespace(s) {\n  return (s || \"\").replace(/[ \\t]+/g, \" \").replace(/\\n{3,}/g, \"\\n\\n\").trim();\n}\n\nfunction truncateChars(s, maxChars) {\n  s = s || \"\";\n  if (s.length <= maxChars) return s;\n  // hard cut but keep it clean\n  return s.slice(0, maxChars - 1).trimEnd() + \"…\";\n}\n\n// ---------- risk scoring ----------\nfunction calcRiskScore(p) {\n  let score = 0;\n\n  const bio = (p.bio || \"\").toLowerCase();\n  const links = (p.links || \"\").toLowerCase();\n  const captions = (p.recent_captions || \"\").toLowerCase();\n  const combined = `${bio} ${links} ${captions}`;\n\n  // HARD signals — confirmed affiliate behavior\n  const hardSignals = [\n    \"use code\",\n    \"promo code\",\n    \"discount code\",\n    \"ref=\",\n    \"affiliate link\",\n    \"my link in bio\",\n    \"use my code\",\n  ];\n  hardSignals.forEach((s) => {\n    if (combined.includes(s)) score += 35;\n  });\n\n  // Prop firms list (score differently depending where found)\n  const propFirms = [\n    \"ftmo\",\n    \"myfundedfx\",\n    \"the5ers\",\n    \"e8 funding\",\n    \"topstep\",\n    \"fundednext\",\n    \"alpha capital\",\n    \"fidelcrest\",\n    \"blueberry funded\",\n    \"aquafunded\",\n  ];\n\n  // Link shorteners / aggregator links (soft risk)\n  const shorteners = [\"bit.ly\", \"linktr.ee\", \"tinyurl\", \"t.co\", \"beacons.ai\", \"campsite.bio\"];\n  shorteners.forEach((d) => {\n    if (links.includes(d)) score += 10;\n  });\n\n  // Only count prop firm names strongly if they appear in LINKS\n  propFirms.forEach((f) => {\n    if (links.includes(f)) score += 50;      // confirmed partner-ish\n    else if (bio.includes(f)) score += 20;   // possible partner\n    // caption mentions alone -> not scored (they may review firms)\n  });\n\n  // soft affiliation language\n  if (/affiliate|ambassador|official partner/.test(bio)) score += 25;\n\n  // follower range guardrail\n  const followers = Number(p.followers ?? p.follower_count ?? 0);\n  if (followers && (followers < 5000 || followers > 500000)) score += 30;\n\n  return clamp(score, 0, 100);\n}\n\n// ---------- template selection (weighted + rules) ----------\nfunction selectTemplate(p) {\n  const priority = String(p.priority || \"\").toLowerCase();\n  const outreachAngle = String(p.outreach_angle || p.outreachAngle || \"\").trim();\n  const hasGoodAngle = outreachAngle.length > 30;\n\n  // Base weights:\n  // A 40%, B 40%, C 20% BUT only if high priority + good angle\n  const r = Math.random();\n\n  if (r < 0.40) return \"A\";\n  if (r < 0.80) return \"B\";\n\n  if (priority === \"high\" && hasGoodAngle) return \"C\";\n  return Math.random() < 0.5 ? \"A\" : \"B\";\n}\n\n// ---------- DM generation ----------\nconst propFirmCTAs = [\n  \"Do you already have a prop firm partner?\",\n  \"Are you currently promoting any funded account firms?\",\n  \"Any prop firm referral links or codes you're using right now?\",\n  \"Open to a prop firm partnership if it's a fit?\"\n];\n\nfunction buildMessage(p, templateKey) {\n  const outreachAngle = String(p.outreach_angle || p.outreachAngle || \"\").trim();\n\n  if (templateKey === \"A\") {\n    const observation = pickRandom([\n      `Saw your post on funded challenges — ${pickRandom([\"super clear breakdown\", \"really well explained\", \"solid content\"])}`,\n      `Your ${pickRandom([\"forex\", \"trading\", \"funded account\"])} content is ${pickRandom([\"genuinely solid\", \"really clean\", \"well put together\"])}`,\n      `Your breakdown of ${pickRandom([\"prop firm challenges\", \"funded trading\", \"the evaluation process\"])} stood out`,\n    ]);\n    const cta = pickRandom(propFirmCTAs);\n    return `${observation}.\\n\\n${cta}`;\n  }\n\n  if (templateKey === \"B\") {\n    const credibility = pickRandom([\n      `Your forex content is solid — feels like you've got real traders following you`,\n      `${pickRandom([\"Genuine\", \"Real\", \"Solid\"])} audience you've built in the trading space`,\n      `Your content reads like it's written by an actual trader — ${pickRandom([\"refreshing\", \"rare\", \"stands out\"])}`,\n    ]);\n    const cta = pickRandom(propFirmCTAs);\n    return `${credibility}.\\n\\n${cta}`;\n  }\n\n  // Template C (only when allowed)\n  const cta = pickRandom([\n    \"Open to chatting if you're not already partnered with a prop firm?\",\n    \"Worth a conversation if you're not already working with one?\",\n    \"Would you be open to it if you're not already set up with someone?\"\n  ]);\n  return `${outreachAngle}\\n\\n${cta}`;\n}\n\n// ---------- apply logic ----------\nconst riskScore = calcRiskScore(profile);\nprofile.risk_score = riskScore;\n\n// Dual-threshold routing fields\nif (riskScore >= 80) {\n  profile.eligible = false;\n  profile.needs_review = false;\n  profile.status = \"skipped\";\n  profile.skip_reason = `Auto-skipped: risk score ${riskScore}`;\n  // keep dm_message empty\n  profile.dm_message = null;\n  return { json: profile };\n}\n\nif (riskScore >= 50) {\n  profile.eligible = true;\n  profile.needs_review = true;\n  profile.priority = \"low\";\n  profile.status = \"needs_review\";\n  profile.skip_reason = null;\n  profile.dm_message = null;\n  profile.assigned_account = null;\n  return { json: profile };\n}\n\n// Clean lead: proceed\nprofile.eligible = true;\nprofile.needs_review = false;\nprofile.skip_reason = null;\n\n// Template selection\nconst templateKey = selectTemplate(profile);\nprofile.template_used = `Template ${templateKey}`;\n\n// Build DM (cap at 260 chars)\nlet dmMessage = buildMessage(profile, templateKey);\ndmMessage = stripExtraWhitespace(dmMessage);\ndmMessage = truncateChars(dmMessage, 260);\nprofile.dm_message = dmMessage;\nprofile.message_length = dmMessage.length;\n\n// Account assignment: deterministic round-robin using lead_index % 3\nconst accounts = [\"@your_account_1\", \"@your_account_2\", \"@your_account_3\"];\nconst leadIndex = Number.isFinite(Number(profile.lead_index)) ? Number(profile.lead_index) : 0;\nprofile.assigned_account = accounts[leadIndex % accounts.length];\n\n// Human delay: 2–9 minutes\nconst delaySecs = randomInt(120, 540);\nprofile.suggested_delay_secs = delaySecs;\nprofile.delay_display = `${Math.floor(delaySecs / 60)}m ${delaySecs % 60}s`;\n\n// Inrō eligibility: only flips true after reply webhook updates it\nprofile.inro_eligible = false;\n\nprofile.status = \"queued\";\n\nreturn { json: profile };\n\n\n\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "608f70d7-5f5d-46f6-82af-000f64b8c536",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map((item, i) => {\n  item.json.lead_index = i;\n  return item;\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "1a07761c-558f-4d4c-aac8-9848926d1bf8",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "app5eZFITx5FojSC5",
+          "mode": "list",
+          "cachedResultName": "Affiliate Outreach System",
+          "cachedResultUrl": "https://airtable.com/app5eZFITx5FojSC5"
+        },
+        "table": {
+          "__rl": true,
+          "value": "tblQwrVPBRPUKVVxg",
+          "mode": "list",
+          "cachedResultName": "DM Queue",
+          "cachedResultUrl": "https://airtable.com/app5eZFITx5FojSC5/tblQwrVPBRPUKVVxg"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "username": "={{ $json.username }}",
+            "Followers": "={{ $json.followers }}\n",
+            "profile_url": "={{ $json.profile_url }}",
+            "risk_score": "={{ $json.risk_score }}\n",
+            "dm_message": "={{ $json.dm_message }}",
+            "assigned_account": "={{ $json.assigned_account }}",
+            "suggested_delay_secs": "={{ $json.suggested_delay_secs }}\n",
+            "delay_display": "={{ $json.delay_display }}",
+            "intro_eligible": "={{ $json.intro_eligible ?? false }}\n\n",
+            "needs_review": "={{ $json.needs_review }}\n",
+            "status": "={{ $json.status ?? \"queued\" }}\n\n"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "username",
+              "displayName": "username",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Followers",
+              "displayName": "Followers",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "profile_url",
+              "displayName": "profile_url",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "risk_score",
+              "displayName": "risk_score",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "dm_message",
+              "displayName": "dm_message",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "assigned_account",
+              "displayName": "assigned_account",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "suggested_delay_secs",
+              "displayName": "suggested_delay_secs",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "delay_display",
+              "displayName": "delay_display",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "queued",
+                  "value": "queued"
+                },
+                {
+                  "name": "sent",
+                  "value": "sent"
+                },
+                {
+                  "name": "replied",
+                  "value": "replied"
+                },
+                {
+                  "name": "closed",
+                  "value": "closed"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "intro_eligible",
+              "displayName": "intro_eligible",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "needs_review",
+              "displayName": "needs_review",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        624,
+        0
+      ],
+      "id": "5b41d4a9-341f-45dc-bcb1-0114975eb807",
+      "name": "Create a record",
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "lJGmXdmijiJuhnPf",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    }
+  ],
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "headers": {
+            "host": "affiliatesdemo.app.n8n.cloud",
+            "user-agent": "curl/8.7.1",
+            "content-length": "228",
+            "accept": "*/*",
+            "accept-encoding": "gzip, br",
+            "cdn-loop": "cloudflare; loops=1; subreqs=1",
+            "cf-connecting-ip": "153.33.76.86",
+            "cf-ew-via": "15",
+            "cf-ipcountry": "US",
+            "cf-ray": "9d086e51573ee0b3-DTW",
+            "cf-visitor": "{\"scheme\":\"https\"}",
+            "cf-worker": "n8n.cloud",
+            "content-type": "application/json",
+            "x-forwarded-for": "153.33.76.86, 172.68.204.176",
+            "x-forwarded-host": "affiliatesdemo.app.n8n.cloud",
+            "x-forwarded-port": "443",
+            "x-forwarded-proto": "https",
+            "x-forwarded-server": "traefik-prod-users-gwc-104-6f574f466-glmpg",
+            "x-is-trusted": "yes",
+            "x-real-ip": "153.33.76.86"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "username": "forextrader1",
+            "bio": "Forex trader sharing funded account journey",
+            "followers": 24000,
+            "avg_likes": 1200,
+            "avg_comments": 80,
+            "platform": "instagram",
+            "profile_url": "https://instagram.com/forextrader1"
+          },
+          "webhookUrl": "https://affiliatesdemo.app.n8n.cloud/webhook/new-leads",
+          "executionMode": "production"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Create a record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "e0f4d9bd-9a4f-47aa-9fa8-9c404aaca08b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "9008b0c33cbfafcfb9000469c0a1b230050e9d9557feb9e55f4890b3af375940"
+  },
+  "id": "dYrIWLddiPHM6XMD",
+  "tags": []
+}
